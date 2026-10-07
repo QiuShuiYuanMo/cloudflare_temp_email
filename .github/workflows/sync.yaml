@@ -1,4 +1,4 @@
-name: Upstream Sync
+name: Upstream Sync and Deploy
 
 on:
   schedule:
@@ -8,8 +8,12 @@ on:
 permissions:
   contents: write
 
+env:
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
 jobs:
-  sync_latest_from_upstream:
+  sync-and-deploy:
     name: Sync latest commits from upstream repo
     runs-on: ubuntu-latest
     steps:
@@ -28,10 +32,63 @@ jobs:
           git remote add upstream https://github.com/dreamhunter2333/cloudflare_temp_email.git
           git fetch --no-tags upstream main
           git checkout upstream/main -- .
+          rm -f .github/workflows/backend_deploy.yaml .github/workflows/frontend_deploy.yaml .github/workflows/frontend_pagefunction_deploy.yaml .github/workflows/docs_deploy.yml .github/workflows/tag_build.yml
+          git checkout HEAD -- .github/workflows/sync.yaml
           git add -A
           if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No upstream source changes."
           else
             git commit -m "chore: sync upstream cloudflare_temp_email"
             git push origin HEAD:main
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Setup Node and pnpm
+        if: steps.sync.outputs.changed == 'true' && env.CLOUDFLARE_API_TOKEN != ''
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - name: Setup Node.js
+        if: steps.sync.outputs.changed == 'true' && env.CLOUDFLARE_API_TOKEN != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Build and deploy Worker
+        if: steps.sync.outputs.changed == 'true' && env.CLOUDFLARE_API_TOKEN != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd frontend
+          pnpm install --frozen-lockfile
+          pnpm build:pages
+          cd ../worker
+          pnpm install --frozen-lockfile
+          cat > wrangler.toml <<'EOF'
+          name = "temp-email-qiushui"
+          main = "src/worker.ts"
+          compatibility_date = "2025-04-01"
+          compatibility_flags = ["nodejs_compat"]
+          keep_vars = true
+
+          [assets]
+          directory = "../frontend/dist"
+          binding = "ASSETS"
+          run_worker_first = true
+
+          [[d1_databases]]
+          binding = "DB"
+          database_id = "c511db87-14cb-4894-b14a-8fc15456a2aa"
+
+          [[kv_namespaces]]
+          binding = "KV"
+          id = "2a8ba9d55fda42cea14da58ed3f2dbd7"
+          EOF
+          pnpm exec wrangler deploy --minify --keep-vars --message "Sync upstream cloudflare_temp_email"
+
+      - name: Explain skipped deployment
+        if: steps.sync.outputs.changed == 'true' && env.CLOUDFLARE_API_TOKEN == ''
+        run: echo "Upstream source synced; deployment skipped because Cloudflare secrets are not configured."
