@@ -5,14 +5,33 @@ on:
     - cron: "0 0 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   sync_latest_from_upstream:
     name: Sync latest commits from upstream repo
     runs-on: ubuntu-latest
-    if: ${{ github.event.repository.fork }}
-
     steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Sync upstream changes
-        run: gh repo sync ${{ github.repository }} --source dreamhunter2333/cloudflare_temp_email --branch main
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        id: sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/dreamhunter2333/cloudflare_temp_email.git
+          git fetch --no-tags upstream main
+          git checkout upstream/main -- .
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No upstream source changes."
+          else
+            git commit -m "chore: sync upstream cloudflare_temp_email"
+            git push origin HEAD:main
+          fi
